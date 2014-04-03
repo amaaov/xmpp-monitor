@@ -1,0 +1,392 @@
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+  <title>VK4XMPP</title>
+
+  <link rel="icon" href="/favicon.png" type="image/png" />
+
+  <script type="text/javascript" src="js/jquery-1.10.2.min.js"></script>
+  <script type="text/javascript" src="js/jquery.dataTables.min.js"></script>
+
+  <link rel="stylesheet" href="css/bootstrap.min.css" />
+  <link rel="stylesheet" href="css/bootstrap-theme.min.css" />
+  <script type="text/javascript" src="js/bootstrap.min.js"></script>
+
+  <script type="text/javascript" src="js/jquery-ui/jquery-ui.min.js"></script>
+  <script type="text/javascript" src="js/persist-min.js"></script>
+
+  <link rel="stylesheet" href="css/font-awesome.min.css">
+
+  <script type="text/javascript" src="js/strophe/b64.js"></script>
+  <script type="text/javascript" src="js/strophe/md5.js"></script>
+  <script type="text/javascript" src="js/strophe/sha1.js"></script>
+  <script type="text/javascript" src="js/strophe/strophe.js"></script>
+
+  <link rel="stylesheet" href="css/jquery.dataTables.css" type="text/css" />
+
+  <link rel="stylesheet" href="css/style.css" type="text/css" media="screen" />
+  <script type="text/javascript" src="js/date.format.js"></script>
+  <script type="text/javascript" src="js/datatables.sort.js"></script>
+  <script type="text/javascript" src="js/xmpp.js"></script>
+  <script type="text/javascript" src="js/muc_handler.js"></script>
+
+  <script type="text/javascript">
+    /* Hosts table header */
+    var hosts_table, hosts_cols = [
+        {"sTitle":"Hostname","sType":"string","sClass":"hostname"},
+        {"sTitle":"Online","sType":"numeric","sClass":"online"},
+        {"sTitle":"Users","sType":"numeric","sClass":"users"},
+        {"sTitle":"Uptime","sType":"uptime","sClass":"uptime"},
+        {"sTitle":"Memory","sType":"numeric","sClass":"memory"},
+        {"sTitle":"Version","sType":"version","sClass":"version"}
+    ], hosts_cols_ind = hosts_cols.map(function(o){return o.sTitle});
+    
+    var hosts_stats = new Array();
+    var store = new Persist.Store('vkxmpp');
+    var hosts_seen = {};
+
+    init = function() {
+      /* Queue init */
+      log('Queue processor initialization');
+      window.queue = [];
+      window.queue_locks = [];
+      window.qtimer = setTimeout(function(){queue_proc()}, 1000);
+     
+      hosts_seen = store.get('seen')
+      if (typeof(hosts_seen) !== 'undefined')
+        hosts_seen = JSON.parse(hosts_seen)
+      else
+        hosts_seen = {};
+ 
+      /* Connect to XMPP server */
+      window.xmpp_srv = 'anon.anakee.ru';
+      window.xmpp_bosh = '/http-bind';
+      queue_push(xmpp_connect);
+
+      /* Add XMPP handlers */
+      queue_push(add_xmpp_handlers);
+
+      /* Wait for good connection */
+      queue_push(function(){if(window.xmppc && xmppc.connected && xmppc.jid !== window.xmpp_srv){queue_unlock("xmpp_bad");log('Got JID: '+xmppc.jid);}else{log('Not connected')}},[],1000,0,true,"xmpp_bad");
+
+      /* Ping bot */
+      queue_push(function(){xmppc.send($msg({to:"aurora@anakee.ru",type:"chat"}).c("body").t("ping").tree())});
+
+      /* Generate HTML table */
+      queue_push(generate_hosts_table);
+
+      /* Check hosts */
+      queue_push(check_hosts,[],1000,0,false,"xmpp_bad");
+    };
+
+    add_xmpp_handlers = function(){
+      var xmppc = window.xmppc;
+      if(!xmppc) return;
+      xmppc.addHandler(message_handler, null, 'message');
+    }
+
+    generate_hosts_table = function(){
+      $("#hosts .loader").hide();
+      $("#hosts table").show();
+      
+      var hosts_rows = [];
+      store.get('data',function(o,v){if(o){try{hosts_rows=JSON.parse(v);}catch(e){hosts_rows=[]}}});
+
+      hosts_table = $("#hosts table").dataTable({
+        "aaData":hosts_rows, "aoColumns":hosts_cols, "iDisplayLength": 100, "bFilter": false,
+        "fnFooterCallback": function(nRow,aaData,iStart,iEnd,aiDisplay){
+
+          var users = 0, online = 0, uptime = 0, total = 0,
+            users_id = hosts_cols_ind.indexOf('Users'),
+            online_id = hosts_cols_ind.indexOf('Online');
+            uptime_id = hosts_cols_ind.indexOf('Uptime');
+
+          for(var i=iStart;i<iEnd;++i) {
+            users += parseInt(aaData[aiDisplay[i]][users_id]);
+            online += parseInt(aaData[aiDisplay[i]][online_id]);
+            uptime += reTime(aaData[aiDisplay[i]][uptime_id]);
+            ++total;
+          }
+          $(nRow).find('th').eq(users_id).html(users);
+          $(nRow).find('th').eq(online_id).html(online);
+          
+          store.set('data',JSON.stringify(aaData));
+          store.set('seen',JSON.stringify(hosts_seen));
+
+        }
+      });
+    }
+
+    clear_dead_hosts = function() {
+      var aaData = hosts_table.fnGetData();
+      var hosts = new Array();
+      for (var host in hosts_stats) { hosts.push(host); }
+      for (var i=0;i<aaData.length;++i) {
+        if ($.inArray(aaData[i][0], hosts) < 0) {
+          hosts_table.fnDeleteRow(i);
+        }
+      }
+    }
+    
+    check_hosts = function() {
+      /* Mess around hosts in table */
+      $.getJSON('hosts.json', function(data){
+        $.each(data, function(i,v){
+          hostname = v;
+          log('Push '+hostname+' to queue');
+          /* Just add a host to queue */
+          queue_push(query_host,[hostname,queue_unlock],1000,0,true,"query_host");
+        });
+        queue_push(queue_unlock,["query_host"],3000);
+        queue_push(clear_dead_hosts,[],2000,0,false,"query_host");
+        queue_push(avg_host,[],1000,0,false,"query_host");
+      });
+    }
+
+    queue_push = function(func,args,timeout,do_repeat,do_lock,lock_id){
+      func = func || function(){}
+      args = args || [];
+      timeout = timeout || 1000;
+      do_repeat = do_repeat || 0;
+      do_lock = do_lock || false;
+      lock_id = lock_id || "";
+
+      window.queue.push({"func":func,"args":args,"timeout":timeout,"do_repeat":do_repeat,"do_lock":do_lock,"lock_id":lock_id});
+    }
+
+    queue_is_locked = function(id){
+      if(!window.queue_lock) return false;
+      return window.queue_lock[id] || false;
+    }
+
+    queue_lock = function(id){
+      if(!window.queue_lock) return;
+      window.queue_lock[id] = true;
+    }
+
+    queue_unlock = function(id){
+      if(!window.queue_lock) return;
+      window.queue_lock[id] = false;
+    }
+    
+    queue_proc = function(){
+      /* Check queue */
+      var q = window.queue, q_lock = window.queue_lock, item;
+      if(!q || q.length === 0 || !q_lock) return;
+      /* Checking locks */
+      item = q[0];
+      if(item.lock_id) {
+        if(queue_is_locked(item.lock_id)) return;
+        if(item.do_lock) queue_lock(item.lock_id);
+      }
+      /* Queue workflow */
+      item = q.shift();
+      if(typeof(item) !== 'undefined'){
+        var func = item.func;
+        if(typeof(func) === 'string') func = window[func];
+        if(typeof(func) === 'function'){
+          func.apply(null,item.args);
+          /* Repetition */
+          if(item.do_repeat > 0){
+            item.do_repeat--;
+            q.push(item);
+          }
+        }
+        if(item.timeout > 0) window.qtimer = setTimeout(function(){queue_proc();},item.timeout);
+      }
+    }
+    
+    queue_is_empty = function(){
+      return (!window.queue || window.queue.length === 0);
+    }
+    
+    query_host = function(hostname,callback){
+      if(!window.xmppc) return;
+      xmppc = window.xmppc;
+      
+      if(hosts_seen[hostname] > 0) {
+        dat = new Date(hosts_seen[hostname])
+        last = ' (last: '+dat.format('isoDateTime')+')';
+      } else {
+        last = ''
+      }
+      log('Querying '+hostname+last);
+      
+      hosts_stats[hostname] = new Array();
+
+      /* Ping query */
+      ping_iq = $iq({type:'get',to:hostname,id:new Date().getTime()})
+        .c("ping", {xmlns:'urn:xmpp:ping'});
+      xmppc.sendIQ(ping_iq, ping_handler, error_handler, 13000);
+      /* Stats query */
+      var stats_iq = $iq({type:'get',to:hostname,id:xmppc.getUniqueId('stats')})
+        .c("query", {xmlns:'http://jabber.org/protocol/stats'})
+        .c("stat", {name:'users/total'})
+        .up().c("stat", {name:'users/online'})
+        .up().c("stat", {name:'memory/real'})
+        .up().c("stat", {name:'memory/virtual'});
+      xmppc.sendIQ(stats_iq, stats_handler, error_handler, 13000);
+      /* Version query */
+      var version_iq = $iq({type:'get',to:hostname,id:xmppc.getUniqueId('version')})
+        .c("query", {xmlns:'jabber:iq:version'});
+      xmppc.sendIQ(version_iq, version_handler, error_handler, 13000);
+      /* Uptime query */
+      var uptime_iq = $iq({type:'get',to:hostname,id:xmppc.getUniqueId('uptime')})
+        .c("query", {xmlns:'jabber:iq:last'});
+      xmppc.sendIQ(uptime_iq, uptime_handler, error_handler, 13000);
+
+      callback("query_host");
+    }
+    
+    log_stz = function(stanza, msg){
+      /* Log stanza formatted with message */
+      log('&lt;'+$(stanza).attr('from')+'&gt; '+$(stanza).find('query').attr('xmlns')+(msg?msg:''));
+    }
+    
+    table_replace = function(id,field,value){
+      var df = $("#hosts table > tbody > tr > td:contains("+id+")");
+      if(df.length === 0){
+        hosts_table.fnAddData([id,'','','','','']);
+        df = $("#hosts table > tbody > tr > td:contains("+id+")");
+      }
+      
+      var field_pos = hosts_cols_ind.indexOf(field);
+      var pos = hosts_table.fnGetPosition($(df.parent())[0]);
+      hosts_table.fnUpdate(value, pos, field_pos);
+
+      //$("td:eq(0)", df.parent()).effect("highlight",{},1000);
+      $("td:eq("+field_pos+")", df.parent()).effect("highlight",{},3000);
+    }
+
+    avg_host = function(){
+      var stats_total = new Array(), stats_avg = new Array();
+      stats_total['hosts'] = 0;
+      for(var host in hosts_stats){
+        ++stats_total['hosts'];
+        for(var stat in hosts_stats[host]){
+          if(typeof(stats_total[stat])==="undefined") stats_total[stat]=0;
+          stats_total[stat] += hosts_stats[host][stat];
+          stats_avg[stat] = parseInt(stats_total[stat]/stats_total['hosts']);
+        }
+      }
+      
+      var hosts_points = new Array();
+      for(var host in hosts_stats){
+        var tmp = new Array();
+        for(var stat in hosts_stats[host]){
+          tmp.push(stat+((hosts_stats[host][stat] < stats_avg[stat])?('-low'):('-high')));
+        }
+        hosts_points[host] = tmp.join(' ');
+        $("#hosts table > tbody > tr > td:contains("+host+")").parent().addClass(hosts_points[host]);
+      }
+
+      $("span.stat-icon").remove();
+      //$("tr.uptime-high.version-high > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-globe fa-spin' />&nbsp;</span>"));
+      $("tr.uptime-high > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-arrow-up' title='Стабильный' />&nbsp;</span>"));
+      $("tr.online-high > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-users' title='Популярный' />&nbsp;</span>"));
+      $("tr.ping-low > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-bolt' title='Доступный' />&nbsp;</span>"));
+      //$("tr.version-low > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-warning' title='Старый' />&nbsp;</span>"));
+      $("tr.users-low.online-low > td:first-child").prepend($("<span class='stat-icon'><i class='fa fa-check-square-o' title='Стоит выбрать' />&nbsp;</span>"));
+    }
+    
+    /*
+     * Response handlers
+     */
+
+    message_handler = function(stanza){
+      var from = stanza.getAttribute('from');
+      var text = Strophe.getText(stanza.getElementsByTagName('body')[0]);
+      log('&lt;'+from+'&gt;'+text);
+      return true;
+    }
+    
+    error_handler = function(stanza){
+      var host = $(stanza).attr('from');
+      var error = $(stanza).find('error').text();
+      log('&lt;'+host+'&gt; '+error, 'error');
+      
+      if(typeof(host) !== 'undefined'){
+        var df = $("#hosts table > tbody > tr > td:contains("+host+")");
+        var pos = hosts_table.fnGetPosition($(df.parent())[0]);
+        if(pos >= 0) hosts_table.fnDeleteRow(pos);
+      }
+      
+      return true;
+    }
+    
+    stats_handler = function(stanza){
+      var host = $(stanza).attr('from');
+      var users_online = parseInt($(stanza).find('query').find('stat[name="users/online"]').attr('value'));
+      var users_total = parseInt($(stanza).find('query').find('stat[name="users/total"]').attr('value'));
+      var memory_virtual = parseInt($(stanza).find('query').find('stat[name="memory/virtual"]').attr('value'));
+      var memory_real = parseInt($(stanza).find('query').find('stat[name="memory/real"]').attr('value'));
+      
+      table_replace(host,'Users',users_total);
+      table_replace(host,'Online',users_online);
+      table_replace(host,'Memory',(memory_real/1024).toFixed(2))
+
+      hosts_stats[host]['users'] = users_total;
+      hosts_stats[host]['online'] = users_online;
+      hosts_stats[host]['memory_virtual'] = memory_virtual;
+      hosts_stats[host]['memory_real'] = memory_real;
+      
+      return true;
+    }
+    
+    version_handler = function(stanza){
+      var host = $(stanza).attr('from');
+      var version = $(stanza).find('query').find('version').text();
+      
+      table_replace(host,'Version',version);
+      
+      hosts_stats[host]['version'] = reVersion(version);
+      
+      return true;
+    }
+    
+    uptime_handler = function(stanza){
+      var host = $(stanza).attr('from');
+      var uptime = $(stanza).find('query').attr('seconds');
+      
+      table_replace(host,'Uptime',uptime.toUptime());//toHHMMSS());
+      
+      hosts_stats[host]['uptime'] = parseInt(uptime);
+      
+      return true;
+    }
+    
+    ping_handler = function(stanza){
+      var host = $(stanza).attr('from');
+      var itime = parseInt($(stanza).attr('id'));
+      var ctime = new Date().getTime();
+      var alpha = 0;
+
+      var ping = Math.abs(ctime-itime-alpha);
+
+      //table_replace(host,'Ping',ping);
+
+      //hosts_stats[host]['ping'] = ping;
+      hosts_seen[host] = ctime;
+      
+      return true;
+    }
+  </script>
+</head>
+<body onload="init();">
+  <div id="wrap">
+    <div id="main" class="container clear-top">
+      <div class="row">
+        <div class="span12" id="hosts">
+          <div class="loader"><i class="fa fa-globe fa-spin fa-5x"></i></div>
+          <table cellpadding="0" cellspacing="0" border="0" class="display" style="display:none;">
+            <tfoot><tr><th>Total:</th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>
+          </table>
+        </div>
+      </div>
+      <div class="row">
+        <div class="span12" id="status"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
