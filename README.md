@@ -1,4 +1,6 @@
 xmpp-monitor
 ============
 
-HTML Monitor for XMPP services
+Strophe HTML Monitor for XMPP services.
+
+Required: XMPP server with Anonymous authentication.
