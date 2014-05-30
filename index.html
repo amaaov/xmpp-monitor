@@ -38,7 +38,8 @@
         {"sTitle":"Users","sType":"numeric","sClass":"users"},
         {"sTitle":"Uptime","sType":"uptime","sClass":"uptime"},
         {"sTitle":"Memory","sType":"numeric","sClass":"memory"},
-        {"sTitle":"Version","sType":"version","sClass":"version"}
+        {"sTitle":"Version","sType":"version","sClass":"version"},
+        {"sTitle": "Groupchats", "sType":"version","sClass":"groupchats"}
     ], hosts_cols_ind = hosts_cols.map(function(o){return o.sTitle});
     
     var hosts_stats = new Array();
@@ -60,14 +61,27 @@
  
       /* Connect to XMPP server */
       window.xmpp_srv = 'anon.anakee.ru';
-      window.xmpp_bosh = '/http-bind';
+      window.xmpp_bosh = "/http-bind"
       queue_push(xmpp_connect);
 
       /* Add XMPP handlers */
       queue_push(add_xmpp_handlers);
 
       /* Wait for good connection */
-      queue_push(function(){if(window.xmppc && xmppc.connected && xmppc.jid !== window.xmpp_srv){queue_unlock("xmpp_bad");log('Got JID: '+xmppc.jid);}else{log('Not connected')}},[],1000,0,true,"xmpp_bad");
+      queue_push(function() 
+      {
+        if (window.xmppc && xmppc.connected && xmppc.jid !== window.xmpp_srv) 
+          {
+            queue_unlock("xmpp_bad");
+            log('Got JID: '+xmppc.jid);
+          }
+
+        else 
+          {
+            log('Not connected')
+          }
+        },
+        [],1000,0,true,"xmpp_bad");
 
       /* Ping bot */
       queue_push(function(){xmppc.send($msg({to:"aurora@anakee.ru",type:"chat"}).c("body").t("ping").tree())});
@@ -235,6 +249,10 @@
         .c("query", {xmlns:'jabber:iq:last'});
       xmppc.sendIQ(uptime_iq, uptime_handler, error_handler, 13000);
 
+      var groupchat_iq = $iq({type:'get',to:hostname,id:xmppc.getUniqueId('groupchats')})
+        .c("query", {xmlns:'http://jabber.org/protocol/disco#info'});
+
+      xmppc.sendIQ(groupchat_iq, groupchat_handler, error_handler, 13000);
       callback("query_host");
     }
     
@@ -369,6 +387,13 @@
       hosts_seen[host] = ctime;
       
       return true;
+    }
+    groupchat_handler = function(stanza) {
+      var host = $(stanza).attr("from");
+      var gc = $(stanza).find("query").find('feature[var="gc-1.0"]').attr("var");
+      gc = (gc) ? "Supported" : "NOT supported";
+      hosts_stats[host]["groupchats"] = gc;
+      table_replace(host,'Groupchats',hosts_stats[host]["groupchats"]);
     }
   </script>
 </head>
