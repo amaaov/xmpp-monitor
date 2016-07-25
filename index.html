@@ -70,7 +70,7 @@
       queue_push(function(){if(window.xmppc && xmppc.connected && xmppc.jid !== window.xmpp_srv){queue_unlock("xmpp_bad");log('Got JID: '+xmppc.jid);}else{log('Not connected')}},[],1000,0,true,"xmpp_bad");
 
       /* Ping bot */
-      queue_push(function(){xmppc.send($msg({to:"aurora@anakee.ru",type:"chat"}).c("body").t("ping").tree())});
+      //queue_push(function(){xmppc.send($msg({to:"aurora@anakee.ru",type:"chat"}).c("body").t("ping").tree())});
 
       /* Generate HTML table */
       queue_push(generate_hosts_table);
