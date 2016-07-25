@@ -52,6 +52,7 @@
       window.queue_locks = [];
       window.qtimer = setTimeout(function(){queue_proc()}, 1000);
      
+      window.hosts_path = 'hosts.json';
       hosts_seen = store.get('seen')
       if (typeof(hosts_seen) !== 'undefined')
         hosts_seen = JSON.parse(hosts_seen)
@@ -130,7 +131,7 @@
     
     check_hosts = function() {
       /* Mess around hosts in table */
-      $.getJSON('hosts.json', function(data){
+      $.getJSON(window.hosts_path, function(data){
         $.each(data, function(i,v){
           hostname = v;
           log('Push '+hostname+' to queue');
