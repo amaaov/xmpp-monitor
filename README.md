@@ -5,6 +5,7 @@ Required: XMPP server with Anonymous authentication.
 
 ## Installation
 
+* Configure your XMPP server to have anonymous entry and BOSH server, e.g. using server Prosody: https://prosody.im/doc/anonymous_logins and https://prosody.im/doc/setting_up_bosh
 * Change path to BOSH in index.html at lines 62-63:
 <code>window.xmpp_srv = 'anon.anakee.ru'; window.xmpp_bosh = '/http-bind';</code>
 * Check path to json file with hosts in index.html at line 55: <code>window.hosts_path = 'hosts.json';</code>
